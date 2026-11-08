@@ -4,10 +4,12 @@ Base para que cada vídeo nuevo salga realista sin empezar de cero.
 
 | Archivo | Qué es |
 |---|---|
-| `plantilla_escena.py` | **Punto de partida de cada vídeo.** Mano anatómica real agarrando una regleta, con piel translúcida, poleas y rotura opcional de la A2. |
+| `plantilla_escena.py` | **Plantilla de mano.** Mano anatómica real agarrando una regleta, con piel translúcida, poleas y rotura opcional de la A2. |
+| `plantilla_rodilla.py` | **Plantilla de rodilla.** Pierna corriendo a cámara lenta, con la cintilla iliotibial rozando el epicóndilo lateral en cada apoyo (rodilla del corredor). |
 | `kit/` | Herramientas reutilizables (anatomía, materiales, cámara, animación, render). |
-| `assets/mano_derecha.blend` | Mano derecha de Z-Anatomy: 29 huesos, flexores, vainas, cápsulas, ligamentos y piel. Ver `assets/ATRIBUCION.md`. |
-| `extraer_mano.py` | Regenera el asset desde Z-Anatomy (solo si hace falta añadir piezas). |
+| `assets/mano_derecha.blend` | Mano derecha de Z-Anatomy: 29 huesos, flexores, vainas, cápsulas, ligamentos y piel. |
+| `assets/pierna_derecha.blend` | Pierna derecha de Z-Anatomy (cadera a tobillo): fémur, tibia, peroné, rótula, cintilla iliotibial, cuádriceps, isquiotibiales, gemelos, meniscos, ligamentos, bursas y piel. |
+| `extraer_region.py` | Extrae regiones de Z-Anatomy a `assets/` (`--region mano` o `rodilla`; se añaden más en `REGIONES`). Atribución: `assets/ATRIBUCION.md`. |
 | `escena_poleas.py` | Vídeo anterior (A2), hecho con formas generadas por código. Se deja como referencia. |
 
 ## Empezar un vídeo nuevo
@@ -17,7 +19,8 @@ pip install bpy            # Blender 5.2 como módulo de Python
 cp plantilla_escena.py escena_mi_video.py
 ```
 
-1. Edita el bloque `PLANO` de la copia: dedo protagonista, tipo de agarre, momentos clave.
+   (o `plantilla_rodilla.py` si el vídeo es de rodilla o pierna)
+1. Edita el bloque `PLANO` de la copia: estructura protagonista, gesto, momentos clave.
 2. Prueba con fotogramas sueltos en borrador (rápido):
    ```bash
    python escena_mi_video.py --still 1 110 140 --out pruebas/
@@ -64,6 +67,31 @@ escena.postproduccion(sc)     # viñeteado, grano, aberración cromática
 Dedos: `pulgar`, `indice`, `corazon`, `anular`, `menique`. Huesos del rig:
 `antebrazo`, `mano` y `<dedo>.MC/P1/P2/P3` (el pulgar no tiene P2).
 
+### Pierna y rodilla
+
+```python
+pierna = anatomia.cargar_pierna()
+rig = anatomia.crear_rig_pierna(pierna)      # huesos: pelvis, muslo, pierna, rotula
+mats = materiales.aplicar_auto(pierna, translucidos=("Vastus lateralis",))
+rig.flexion("pierna", 30, frame=50)          # rodilla a 30° (la rótula la sigue sola)
+apoyos = animacion.ciclo_carrera(rig, 100, ciclos=4, frames_por_ciclo=48)
+tramos = animacion.tramos_en_rango(rig, 100, 300, 20, 30)   # rodilla entre 20 y 30°
+animacion.pulsos(bsdf.inputs["Emission Strength"], tramos)  # brillo en esos tramos
+cam.seguir(rig.arm, "pierna", influencia=0.7)               # la cámara acompaña a la rodilla
+```
+
+Útiles: `pierna.epicondilo_lateral()`, `pierna.centro_rodilla()`,
+`anatomia.zona()` (marcar una zona inflamada), `pierna.ocultar("Fascia lata")`.
+Orientación: lateral = −X, anterior = −Y, arriba = +Z; en `Camara.clave`,
+`giro=-90` mira desde el lado externo de la pierna derecha.
+
+### Otra región del cuerpo
+
+1. Añade la región a `REGIONES` en `extraer_region.py` (expresiones con los
+   nombres en inglés de Z-Anatomy) y ejecútalo.
+2. Cárgala con `anatomia.cargar("assets/<archivo>.blend")` y
+   `materiales.aplicar_auto(...)`; para animarla, toma `crear_rig_pierna` como modelo.
+
 ## Lista de comprobación de realismo
 
 Antes de renderizar el vídeo final, repasa:
@@ -100,5 +128,8 @@ Antes de renderizar el vídeo final, repasa:
   `apt-get install libegl1 libgl1-mesa-dri` (en un ordenador normal no hace falta).
 - Las poleas anulares no vienen en Z-Anatomy: `crear_poleas` las genera a partir
   del hueso y los flexores reales. Su posición se ajusta en `anatomia.POLEAS`.
-- La piel de Z-Anatomy viene en parches; `cargar_mano` los funde en una sola
-  superficie (remallado por vóxeles) para que no se vean costuras.
+- La piel de Z-Anatomy viene en parches; `cargar_mano`/`cargar_pierna` los funden
+  en una sola superficie (remallado por vóxeles) para que no se vean costuras.
+- La piel de la pierna tiene un hueco en la cadera (Z-Anatomy no trae esa zona):
+  encuadra de muslo para abajo.
+- La pierna no incluye el pie; los tendones que bajan hacia él se recortan en el tobillo.

@@ -109,6 +109,86 @@ AGARRES = {
 }
 
 
+# ---------------------------------------------------------------- carrera
+
+# Ángulos sagitales típicos al correr (~3,5 m/s) a lo largo de una zancada
+# completa de la misma pierna: (porcentaje del ciclo, grados de flexión).
+# 0 % = contacto del talón; ~40 % = despegue; el resto es la fase aérea.
+CARRERA_RODILLA = [(0, 20), (8, 34), (15, 42), (28, 30), (40, 18), (55, 62), (70, 102),
+                   (85, 55), (95, 26)]
+CARRERA_CADERA = [(0, 32), (15, 24), (28, 8), (40, -12), (55, 8), (75, 36), (88, 40),
+                  (95, 35)]
+# Zona de pinzamiento de la cintilla iliotibial: 20–30° de flexión de rodilla
+PINZAMIENTO_ITB = (20, 30)
+
+
+def ciclo_carrera(rig, frame, ciclos=4, frames_por_ciclo=48, rebote=0.012):
+    """Anima la pierna corriendo en el sitio (rig de anatomia.crear_rig_pierna).
+
+    frames_por_ciclo: 16 ≈ tiempo real a 180 pasos/min y 24 fps; 48 = ralentí x3.
+    rebote: oscilación vertical de la pelvis (m), dos por zancada.
+    Devuelve la lista de fotogramas de cada apoyo (contacto con el suelo), útil
+    para sincronizar resaltes o sonidos.
+    """
+    def claves(tabla, hueso):
+        for c in range(ciclos + 1):
+            for pct, ang in tabla:
+                f = frame + (c + pct / 100) * frames_por_ciclo
+                if f > frame + ciclos * frames_por_ciclo:
+                    break
+                rig.flexion(hueso, ang, frame=f)
+
+    claves(CARRERA_RODILLA, "pierna")
+    claves(CARRERA_CADERA, "muslo")
+    if rebote:
+        pb = rig.pb("pelvis")
+        y0 = pb.location[1]
+        for c in range(ciclos * 2 + 1):
+            for fase, dz in ((0.0, 0.0), (0.12, -rebote), (0.35, rebote * 0.6)):
+                f = frame + (c / 2 + fase / 2) * frames_por_ciclo
+                if f > frame + ciclos * frames_por_ciclo:
+                    break
+                pb.location[1] = y0 + dz
+                pb.keyframe_insert("location", index=1, frame=f)
+    return [frame + c * frames_por_ciclo for c in range(ciclos)]
+
+
+def angulo_rodilla(rig, frame):
+    """Flexión de rodilla (grados) en un fotograma ya animado."""
+    fc = fcurve(rig.pb("pierna"), "rotation_euler", 0)
+    return math.degrees(fc.evaluate(frame) * rig.signos["pierna"]) if fc else 0.0
+
+
+def tramos_en_rango(rig, desde, hasta, lo, hi, paso=0.5):
+    """Tramos [(f0, f1), ...] en que la rodilla está entre lo y hi grados."""
+    tramos, dentro, ini = [], False, None
+    f = desde
+    while f <= hasta:
+        a = angulo_rodilla(rig, f)
+        if lo <= a <= hi and not dentro:
+            dentro, ini = True, f
+        elif not (lo <= a <= hi) and dentro:
+            dentro = False
+            tramos.append((ini, f))
+        f += paso
+    if dentro:
+        tramos.append((ini, hasta))
+    return tramos
+
+
+def pulsos(socket, tramos, base=0.0, pico=4.0, ataque=1.0, caida=6.0):
+    """Hace brillar un valor (p. ej. 'Emission Strength') en cada tramo dado."""
+    socket.default_value = base
+    socket.keyframe_insert("default_value", frame=max(1, tramos[0][0] - ataque) if tramos else 1)
+    for f0, f1 in tramos:
+        socket.default_value = base
+        socket.keyframe_insert("default_value", frame=f0 - ataque)
+        socket.default_value = pico
+        socket.keyframe_insert("default_value", frame=(f0 + f1) / 2)
+        socket.default_value = base
+        socket.keyframe_insert("default_value", frame=f1 + caida)
+
+
 # ---------------------------------------------------------------- dinámica
 
 def muelle(id_data, ruta, indice, frame, desde, hasta, frecuencia=6.0, amortiguacion=0.3,

@@ -136,6 +136,25 @@ class Camara:
                 self.foco.location = objetivo
                 self.foco.keyframe_insert("location", frame=frame)
 
+    def seguir(self, objeto, subtarget="", influencia=0.6, foco=True):
+        """La cámara acompaña a un objeto o hueso (p. ej. la rodilla al correr).
+
+        influencia: 1 = lo sigue del todo (cámara pegada al sujeto); 0.5–0.7 =
+        lo acompaña como un operador, dejando que se mueva algo en el encuadre.
+        Devuelve las restricciones (su 'influence' se puede animar).
+        """
+        res = []
+        for e, k in ((self.orbita, influencia), (self.objetivo, min(1.0, influencia + 0.2)),
+                     (self.foco, 1.0 if foco else 0.0)):
+            if k <= 0:
+                continue
+            c = e.constraints.new("COPY_LOCATION")
+            c.target = objeto
+            c.subtarget = subtarget
+            c.influence = k
+            res.append(c)
+        return res
+
     def enfocar(self, frame, punto, duracion=12):
         """Cambio de foco hacia 'punto', terminando en 'frame' (como un foquista)."""
         self.foco.keyframe_insert("location", frame=frame - duracion)

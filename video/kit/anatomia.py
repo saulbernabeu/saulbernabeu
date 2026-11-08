@@ -1,9 +1,13 @@
-"""Mano anatómica de Z-Anatomy: carga, rig y poleas.
+"""Anatomía de Z-Anatomy: carga de regiones, rigs y estructuras generadas.
 
-Uso típico:
+Mano:
     mano = anatomia.cargar_mano()
     rig = anatomia.crear_rig(mano)
     poleas = anatomia.crear_poleas(mano, rig, "anular")
+Pierna (rodilla):
+    pierna = anatomia.cargar_pierna()
+    rig = anatomia.crear_rig_pierna(pierna)
+    pierna.epicondilo_lateral()        # punto donde roza la cintilla iliotibial
 """
 import math
 import os
@@ -13,8 +17,10 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
-ASSET = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "assets", "mano_derecha.blend")
+ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
+ASSET = os.path.join(ASSETS, "mano_derecha.blend")
+ASSET_PIERNA = os.path.join(ASSETS, "pierna_derecha.blend")
+COLECCIONES = ("Huesos", "Articulaciones", "Musculos_tendones", "Piel")
 
 # nombre en castellano -> ordinal usado por Z-Anatomy
 DEDOS = {"pulgar": "first", "indice": "second", "corazon": "third",
@@ -35,18 +41,38 @@ POLEAS = {
 }
 
 
-class Mano:
-    """Objetos de la mano agrupados por colección."""
+class Region:
+    """Objetos de una región del cuerpo agrupados por colección."""
 
     def __init__(self, objetos):
-        self.obj = objetos                      # nombre -> objeto
+        self.obj = objetos                      # nombre (en inglés) -> objeto
         self.piel = objetos.get("Piel")
 
     def __getitem__(self, nombre):
         return self.obj[nombre]
 
+    def __contains__(self, nombre):
+        return nombre in self.obj
+
     def coleccion(self, nombre):
+        if nombre not in bpy.data.collections:
+            return []
         return [o for o in bpy.data.collections[nombre].objects]
+
+    def buscar(self, texto):
+        """Objetos cuyo nombre contiene 'texto' (sin distinguir mayúsculas)."""
+        t = texto.lower()
+        return [o for n, o in self.obj.items() if t in n.lower()]
+
+    def ocultar(self, *textos):
+        """Oculta en el render los objetos cuyo nombre contiene alguno de los textos."""
+        for t in textos:
+            for o in self.buscar(t):
+                o.hide_render = True
+
+
+class Mano(Region):
+    """Mano derecha."""
 
     def hueso(self, dedo, falange):
         """Malla de un hueso: falange 'MC', 'P1', 'P2' o 'P3'."""
@@ -64,9 +90,43 @@ class Mano:
 
 # ---------------------------------------------------------------- carga
 
-def cargar_mano(ruta=ASSET, colecciones=("Huesos", "Articulaciones", "Musculos_tendones", "Piel"),
-                unir_piel=True):
+def cargar_mano(ruta=ASSET, colecciones=COLECCIONES, unir_piel=True):
     """Añade la mano a la escena actual y devuelve un objeto Mano."""
+    return Mano(cargar(ruta, colecciones, unir_piel, voxel=0.0007))
+
+
+def cargar_pierna(ruta=ASSET_PIERNA, colecciones=COLECCIONES, unir_piel=True):
+    """Añade la pierna derecha (cadera a tobillo) y devuelve un objeto Pierna.
+
+    Los tendones que siguen hacia el pie (que no está incluido) se recortan a
+    la altura del tobillo.
+    """
+    p = Pierna(cargar(ruta, colecciones, unir_piel, voxel=0.0018))
+    if "Tibia" in p:
+        z = p.tobillo().z + 0.015
+        for ob in p.coleccion("Musculos_tendones"):
+            recortar_debajo(ob, z)
+    return p
+
+
+def recortar_debajo(ob, z):
+    """Borra la geometría de un objeto por debajo de la altura z (mundo)."""
+    mw = ob.matrix_world
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    fuera = [v for v in bm.verts if (mw @ v.co).z < z]
+    if fuera:
+        bmesh.ops.delete(bm, geom=fuera, context="VERTS")
+        bm.to_mesh(ob.data)
+    bm.free()
+
+
+def cargar(ruta, colecciones=COLECCIONES, unir_piel=True, voxel=0.001):
+    """Carga cualquier asset de video/assets y devuelve {nombre: objeto}.
+
+    voxel: tamaño (m) del remallado que funde los parches de piel; más pequeño
+    = más detalle y más vértices.
+    """
     with bpy.data.libraries.load(ruta, link=False) as (src, dst):
         dst.collections = [c for c in src.collections if c in colecciones]
     objetos = {}
@@ -77,11 +137,11 @@ def cargar_mano(ruta=ASSET, colecciones=("Huesos", "Articulaciones", "Musculos_t
             for p in ob.data.polygons:
                 p.use_smooth = True
     if unir_piel and "Piel" in colecciones:
-        objetos = _unir_piel(objetos)
-    return Mano(objetos)
+        objetos = _unir_piel(objetos, voxel)
+    return objetos
 
 
-def _unir_piel(objetos):
+def _unir_piel(objetos, voxel):
     partes = [o for o in bpy.data.collections["Piel"].objects]
     nombres = [o.name for o in partes]
     bpy.ops.object.select_all(action="DESELECT")
@@ -95,7 +155,7 @@ def _unir_piel(objetos):
     # un remallado por vóxeles los funde en una sola superficie sin costuras.
     rm = piel.modifiers.new("Fundir", "REMESH")
     rm.mode = "VOXEL"
-    rm.voxel_size = 0.0007
+    rm.voxel_size = voxel
     rm.adaptivity = 0.0
     sm = piel.modifiers.new("Suavizar", "CORRECTIVE_SMOOTH")
     sm.iterations = 2
@@ -146,10 +206,19 @@ def _centro(ob):
 # ---------------------------------------------------------------- rig
 
 class Rig:
-    def __init__(self, arm, dorsal, signo_flexion):
+    def __init__(self, arm, dorsal, signo_flexion, signos=None):
         self.arm = arm
         self.dorsal = dorsal
-        self.signo = signo_flexion   # signo de la rotación X que flexiona
+        self.signo = signo_flexion   # signo de la rotación X que flexiona (mano)
+        self.signos = signos or {}   # signo por hueso (pierna: 'muslo', 'pierna')
+
+    def flexion(self, hueso, grados, frame=None):
+        """Flexiona un hueso (grados, + = flexión anatómica) y opcionalmente pone clave."""
+        pb = self.pb(hueso)
+        s = self.signos.get(hueso, self.signo)
+        pb.rotation_euler[0] = s * math.radians(grados)
+        if frame is not None:
+            pb.keyframe_insert("rotation_euler", index=0, frame=frame)
 
     def pb(self, nombre):
         return self.arm.pose.bones[nombre]
@@ -261,16 +330,18 @@ def _emparentar(ob, arm, hueso):
     ob.matrix_world = mundo
 
 
-def pesos_por_cercania(ob, rig, suavidad=0.0025):
+def pesos_por_cercania(ob, rig, suavidad=0.0025, huesos=None):
     """Pesa cada vértice según su distancia a los segmentos del esqueleto.
 
-    'suavidad' (metros) controla lo ancha que es la transición en las articulaciones.
+    'suavidad' (metros) controla lo ancha que es la transición en las
+    articulaciones. 'huesos' limita qué huesos del rig deforman (todos si None).
     """
     arm = rig.arm
-    nombres = [b.name for b in arm.data.bones]
+    lista = [b for b in arm.data.bones if huesos is None or b.name in huesos]
+    nombres = [b.name for b in lista]
     mw = arm.matrix_world
-    a = np.array([tuple(mw @ b.head_local) for b in arm.data.bones])
-    b = np.array([tuple(mw @ b.tail_local) for b in arm.data.bones])
+    a = np.array([tuple(mw @ b.head_local) for b in lista])
+    b = np.array([tuple(mw @ b.tail_local) for b in lista])
     v = _verts_mundo(ob)
     ab = b - a
     L = np.linalg.norm(ab, axis=1)
@@ -299,6 +370,136 @@ def pesos_por_cercania(ob, rig, suavidad=0.0025):
     mod.use_deform_preserve_volume = True
     # el armature debe ir antes que la subdivisión
     ob.modifiers.move(ob.modifiers.find(mod.name), 0)
+
+
+# ---------------------------------------------------------------- pierna
+
+class Pierna(Region):
+    """Pierna derecha (cadera a tobillo). Lateral = -X, anterior = -Y, arriba = +Z."""
+
+    def epicondilo_lateral(self):
+        """Punto más externo del cóndilo femoral: donde roza la cintilla iliotibial."""
+        v = _verts_mundo(self["Femur"])
+        zmin = v[:, 2].min()
+        cerca = v[v[:, 2] < zmin + 0.07]
+        return Vector(cerca[np.argmin(cerca[:, 0])])
+
+    def cabeza_femoral(self):
+        v = _verts_mundo(self["Femur"])
+        arriba = v[v[:, 2] > v[:, 2].max() - 0.05]
+        medial = arriba[arriba[:, 0] > np.median(arriba[:, 0])]
+        return Vector(medial.mean(axis=0))
+
+    def centro_rodilla(self):
+        f = _verts_mundo(self["Femur"])
+        t = _verts_mundo(self["Tibia"])
+        condilos = f[f[:, 2] < f[:, 2].min() + 0.025].mean(axis=0)
+        meseta = t[t[:, 2] > t[:, 2].max() - 0.02].mean(axis=0)
+        return Vector((condilos + meseta) / 2)
+
+    def tobillo(self):
+        t = _verts_mundo(self["Tibia"])
+        return Vector(t[t[:, 2] < t[:, 2].min() + 0.02].mean(axis=0))
+
+
+def crear_rig_pierna(pierna, deformar=True, suavidad=0.012):
+    """Esqueleto de la pierna: 'pelvis' (raíz), 'muslo', 'pierna' y 'rotula'.
+
+    Flexión con rig.flexion('muslo', grados) (cadera) y rig.flexion('pierna',
+    grados) (rodilla); la rótula sigue sola a la rodilla (≈55 % de su giro),
+    deslizándose por la tróclea. Los tejidos blandos se deforman por cercanía.
+    """
+    cadera = pierna.cabeza_femoral()
+    rodilla = pierna.centro_rodilla()
+    tobillo = pierna.tobillo()
+    rotula_c = _centro(pierna["Patella"])
+    anterior = Vector((0, -1, 0))
+
+    arm_d = bpy.data.armatures.new("Rig_pierna")
+    arm = bpy.data.objects.new("Rig_pierna", arm_d)
+    bpy.context.scene.collection.objects.link(arm)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="EDIT")
+    eb = arm_d.edit_bones
+    b = eb.new("pelvis")
+    b.head, b.tail = cadera, cadera + Vector((0, 0, 0.12))
+    b.align_roll(anterior)
+    b = eb.new("muslo")
+    b.head, b.tail = cadera, rodilla
+    b.align_roll(anterior)
+    b.parent = eb["pelvis"]
+    b = eb.new("pierna")
+    b.head, b.tail = rodilla, tobillo
+    b.align_roll(anterior)
+    b.parent = eb["muslo"]
+    b.use_connect = True
+    b = eb.new("rotula")
+    b.head, b.tail = rodilla, rotula_c
+    b.align_roll(Vector((0, 0, 1)))
+    b.parent = eb["muslo"]
+    bpy.ops.object.mode_set(mode="OBJECT")
+    for pb in arm.pose.bones:
+        pb.rotation_mode = "XYZ"
+
+    def signo(hueso, quiere):
+        pb = arm.pose.bones[hueso]
+        antes = (arm.matrix_world @ pb.tail).copy()
+        pb.rotation_euler = (math.radians(20), 0, 0)
+        bpy.context.view_layer.update()
+        d = (arm.matrix_world @ pb.tail) - antes
+        pb.rotation_euler = (0, 0, 0)
+        bpy.context.view_layer.update()
+        return 1.0 if d.dot(quiere) > 0 else -1.0
+
+    # cadera: flexionar lleva la rodilla hacia delante; rodilla: el tobillo hacia atrás
+    signos = {"muslo": signo("muslo", anterior), "pierna": signo("pierna", -anterior)}
+    signos["rotula"] = signo("rotula", Vector((0, 0, -1)))
+    rig = Rig(arm, anterior, 1.0, signos)
+
+    c = arm.pose.bones["rotula"].constraints.new("TRANSFORM")
+    c.target = arm
+    c.subtarget = "pierna"
+    c.map_from = c.map_to = "ROTATION"
+    c.owner_space = c.target_space = "LOCAL"
+    c.from_min_x_rot, c.from_max_x_rot = -math.pi, math.pi
+    k = 0.55 * signos["rotula"] * signos["pierna"]
+    c.to_min_x_rot, c.to_max_x_rot = -math.pi * k, math.pi * k
+
+    for nombre, hueso in (("Hip bone", "pelvis"), ("Femur", "muslo"), ("Tibia", "pierna"),
+                          ("Fibula", "pierna"), ("Patella", "rotula")):
+        if nombre in pierna:
+            _emparentar(pierna[nombre], arm, hueso)
+
+    if deformar:
+        blandos = pierna.coleccion("Articulaciones") + pierna.coleccion("Musculos_tendones")
+        if pierna.piel:
+            blandos.append(pierna.piel)
+        for ob in blandos:
+            pesos_por_cercania(ob, rig, suavidad, huesos=("pelvis", "muslo", "pierna"))
+            mundo = ob.matrix_world.copy()
+            ob.parent = arm
+            ob.matrix_parent_inverse = arm.matrix_world.inverted()
+            ob.matrix_world = mundo
+    return rig
+
+
+def zona(nombre, centro, radios, hueso_rig=None, rig=None, material=None):
+    """Elipsoide para marcar una zona (inflamación, punto de dolor...).
+
+    Si se da hueso_rig, se emparenta para seguir al hueso.
+    """
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=1, location=centro, segments=32, ring_count=16)
+    ob = bpy.context.active_object
+    ob.name = nombre
+    ob.scale = radios
+    for p in ob.data.polygons:
+        p.use_smooth = True
+    if material:
+        ob.data.materials.append(material)
+    if hueso_rig and rig:
+        bpy.context.view_layer.update()
+        _emparentar(ob, rig.arm, hueso_rig)
+    return ob
 
 
 # ---------------------------------------------------------------- poleas
