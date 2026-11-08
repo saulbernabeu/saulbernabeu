@@ -2,6 +2,10 @@
 
 Guiones en `guiones/`, escenas 3D y renders en `video/`. Todo en castellano.
 
+> **Los reels nuevos se hacen en el repositorio `saulbernabeu/videos-reels`**, que tiene
+> la plantilla de estilo y la versión actualizada de este kit (`plantilla/anatomia/`).
+> Si el usuario pide un reel aquí, avísale y trabaja en ese repositorio.
+
 ## Vídeos 3D: usar siempre el kit
 
 Para cualquier vídeo o escena 3D nueva, **parte de una plantilla** (cópiala a
