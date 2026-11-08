@@ -206,6 +206,46 @@ def hacer_translucido(m, b, borde=0.35):
     return op
 
 
+def grasa(nombre="Grasa"):
+    """Tejido adiposo (p. ej. grasa de Hoffa): amarillo, blando y húmedo."""
+    m, nt, b = _nuevo(nombre)
+    n = _ruido(nt, 150, detalle=4)
+    _rampa(nt, n.outputs["Fac"], (0.80, 0.62, 0.25), (0.95, 0.82, 0.45))
+    nt.links.new(nt.nodes["Color Ramp"].outputs["Color"], b.inputs["Base Color"])
+    b.inputs["Roughness"].default_value = 0.3
+    b.inputs["Coat Weight"].default_value = 0.6
+    _sss(b, 0.8, (4.0, 3.0, 1.5))
+    vor = nt.nodes.new("ShaderNodeTexVoronoi")      # lobulillos
+    vor.inputs["Scale"].default_value = 300
+    _relieve(nt, b, vor.outputs["Distance"], 0.2)
+    return m
+
+
+def bursa(nombre="Bursa"):
+    """Bursa sinovial: saquito translúcido con líquido."""
+    m, nt, b = _nuevo(nombre)
+    b.inputs["Base Color"].default_value = (0.92, 0.85, 0.70, 1)
+    b.inputs["Roughness"].default_value = 0.08
+    b.inputs["Transmission Weight"].default_value = 0.7
+    b.inputs["Coat Weight"].default_value = 1.0
+    b.inputs["Alpha"].default_value = 0.7
+    return m
+
+
+def resalte(nombre="Resalte", color=(1.0, 0.18, 0.08)):
+    """Volumen semitransparente que brilla (zona inflamada, punto de dolor).
+
+    Devuelve (material, nodo_bsdf); anima b.inputs["Emission Strength"].
+    """
+    m, nt, b = _nuevo(nombre)
+    b.inputs["Base Color"].default_value = (*color, 1)
+    b.inputs["Emission Color"].default_value = (*color, 1)
+    b.inputs["Emission Strength"].default_value = 0.0
+    b.inputs["Roughness"].default_value = 0.4
+    b.inputs["Alpha"].default_value = 0.45
+    return m, b
+
+
 # ---------------------------------------------------------------- entorno
 
 def madera(nombre="Madera", tiza=0.35):
@@ -288,4 +328,58 @@ def aplicar_mano(mano, poleas=None):
         for ob in (v if isinstance(v, tuple) else (v,)):
             ob.data.materials.clear()
             ob.data.materials.append(mats["polea"][0])
+    return mats
+
+
+def aplicar_auto(region, translucidos=()):
+    """Asigna materiales a cualquier región según el nombre de cada pieza.
+
+    translucidos: textos de nombres de piezas que también se podrán volver
+    translúcidas (con la piel). Devuelve un dict con los materiales y
+    'piel_opacidad' (y 'opacidad_<texto>' para cada translúcido).
+    """
+    mats = {
+        "hueso": hueso(), "cartilago": cartilago(), "tendon": tendon(), "musculo": musculo(),
+        "fascia": fascia(), "grasa": grasa(), "bursa": bursa(),
+        "ligamento": ligamento()[0],
+    }
+    mats["piel"], mats["piel_opacidad"] = piel()
+
+    def elegir(nombre, cols):
+        n = nombre.lower()
+        if "Huesos" in cols:
+            return "hueso"
+        if "Piel" in cols or nombre == "Piel":
+            return "piel"
+        if "bursa" in n:
+            return "bursa"
+        if "fat pad" in n or "fat body" in n:
+            return "grasa"
+        if "meniscus" in n or "capsule" in n or "cartilage" in n or "sheath" in n:
+            return "cartilago"
+        if "fascia" in n or "aponeurosis" in n or "septum" in n:
+            return "fascia"
+        if "tendon" in n and "sheath" not in n:
+            return "tendon"
+        if "ligament" in n or "retinacul" in n or "tract" in n:
+            return "ligamento"
+        return "musculo"
+
+    for nombre, ob in region.obj.items():
+        clave = elegir(nombre, {c.name for c in ob.users_collection})
+        ob.data.materials.clear()
+        ob.data.materials.append(mats[clave])
+
+    # cada grupo de translúcidos comparte un material (copia del de su primera
+    # pieza) para que un solo valor de opacidad los controle a todos
+    for texto in translucidos:
+        piezas = region.buscar(texto)
+        if not piezas:
+            continue
+        m = piezas[0].data.materials[0].copy()
+        m.name = f"{m.name} translúcido ({texto})"
+        mats[f"opacidad_{texto}"] = hacer_translucido(m, m.node_tree.nodes["Principled BSDF"],
+                                                      borde=0.2)
+        for ob in piezas:
+            ob.data.materials[0] = m
     return mats

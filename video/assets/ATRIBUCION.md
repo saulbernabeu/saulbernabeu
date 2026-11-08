@@ -1,12 +1,13 @@
 # Atribución de modelos
 
-`mano_derecha.blend` contiene piezas extraídas (con `video/extraer_mano.py`) de
+`mano_derecha.blend` y `pierna_derecha.blend` contienen piezas extraídas (con
+`video/extraer_region.py`) de
 **Z-Anatomy**, de Lluís Vinent Juanico y el proyecto Z-Anatomy:
 
 - Repositorio: https://github.com/LluisV/Z-Anatomy
 - Licencia: [Creative Commons Atribución-CompartirIgual 4.0 (CC BY-SA 4.0)](https://creativecommons.org/licenses/by-sa/4.0/deed.es)
 
-Cambios respecto al original: solo se conservan las piezas de la mano derecha,
+Cambios respecto al original: solo se conservan las piezas de cada región,
 se han quitado los materiales y se han aplicado las transformaciones.
 
 ## Qué hay que hacer al publicar un vídeo
