@@ -27,12 +27,12 @@ while read -r A B; do
   NAME=$(printf "tramo_%04d_%04d" "$A" "$B")
   [ -f "$HERE/tramos/$NAME.mp4" ] && continue
   rm -rf "$WORK/$NAME"
-  "$PY" "$HERE/escena_cadera.py" --out "$WORK/$NAME" --frames "$A-$B" --samples "$SAMPLES" --res "$RES" \
-    2>&1 | grep -E "^FRAME|Error|Traceback" || true
+  "$PY" "$HERE/escena_cadera.py" --out "$WORK/$NAME" --frames "$A-$B" --samples "$SAMPLES" --res "$RES" < /dev/null \
+    2>&1 | grep --line-buffered -E "^FRAME|Error|Traceback" || true
   N=$(ls "$WORK/$NAME"/f_*.png 2>/dev/null | wc -l)
   [ "$N" -eq $((B - A + 1)) ] || { echo "Tramo $NAME incompleto ($N)"; exit 1; }
   cp "$WORK/$NAME/anclas.json" "$HERE/tramos/$NAME.json"
-  ffmpeg -loglevel error -y -framerate 24 -start_number "$A" -i "$WORK/$NAME/f_%04d.png" \
+  ffmpeg -nostdin -loglevel error -y -framerate 24 -start_number "$A" -i "$WORK/$NAME/f_%04d.png" \
     -c:v libx264 -preset slow -crf 12 -pix_fmt yuv420p "$HERE/tramos/$NAME.mp4.part.mp4"
   mv "$HERE/tramos/$NAME.mp4.part.mp4" "$HERE/tramos/$NAME.mp4"
   echo "OK $NAME"
