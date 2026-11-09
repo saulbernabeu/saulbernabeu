@@ -24,6 +24,8 @@ from mathutils import Matrix, Quaternion, Vector
 from bpy_extras.object_utils import world_to_camera_view
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from humano import Humano  # noqa: E402
 GLB = os.path.join(HERE, "modelo", "s1045.glb")
 FPS = 24
 N_FRAMES = 1440
@@ -184,30 +186,45 @@ HEAT = (1.0, 0.16, 0.05)     # rojo-anaranjado de inflamación
 COOL = (0.1, 0.85, 0.75)     # turquesa de recuperación
 
 
-def skin_material(hot):
-    """Piel de maniquí cerámico con punto de dolor y modo rayos X."""
-    m, nodes, links = new_mat("Piel")
-    b = nodes["Principled BSDF"]
+def _tex(nodes, links, path, uv, non_color=True):
+    t = nodes.new("ShaderNodeTexImage")
+    t.image = bpy.data.images.load(path, check_existing=True)
+    if non_color:
+        t.image.colorspace_settings.name = "Non-Color"
+    links.new(uv, t.inputs["Vector"])
+    return t.outputs["Color"]
+
+
+def _attr(nodes, name):
+    a = nodes.new("ShaderNodeAttribute")
+    a.attribute_name = name
+    return a.outputs["Fac"]
+
+
+def _noise(nodes, links, vec, scale, detail=4.0, rough=0.6):
+    n = nodes.new("ShaderNodeTexNoise")
+    n.inputs["Scale"].default_value = scale
+    n.inputs["Detail"].default_value = detail
+    n.inputs["Roughness"].default_value = rough
+    if vec is not None:
+        links.new(vec, n.inputs["Vector"])
+    return n.outputs["Fac"]
+
+
+def heat_xray(m, nodes, links, b, col, hot, emis=30.0):
+    """Tinte y brillo de dolor (HEAT) o recuperación (COOL) y modo rayos X."""
     out = nodes["Material Output"]
-    b.inputs["Roughness"].default_value = 0.38
-    b.inputs["Subsurface Weight"].default_value = 0.25
-    b.inputs["Subsurface Scale"].default_value = 0.02
-    b.inputs["Subsurface Radius"].default_value = (1.0, 0.45, 0.3)
-    b.inputs["Coat Weight"].default_value = 0.25
-    b.inputs["Coat Roughness"].default_value = 0.2
     heat = value_node(nodes, "HEAT", 0.0)
     cool = value_node(nodes, "COOL", 0.0)
     xray = value_node(nodes, "XRAY", 0.0)
     f_core = dist_factor(nodes, links, hot, 0.07, 1.5)
     f_wide = dist_factor(nodes, links, hot, 0.16, 2.0)
-    # color base: blanco cálido, teñido de rojo cerca del punto de dolor
     tint = math_node(nodes, links, "MULTIPLY", f_wide, heat)
     tint = math_node(nodes, links, "MINIMUM", tint, 0.85)
-    col = mix_color(nodes, links, tint, (0.80, 0.78, 0.76), (0.75, 0.10, 0.06))
+    col = mix_color(nodes, links, tint, col, (0.75, 0.10, 0.06))
     ctint = math_node(nodes, links, "MULTIPLY", f_wide, cool)
     col = mix_color(nodes, links, ctint, col, (0.15, 0.7, 0.62))
     links.new(col, b.inputs["Base Color"])
-    # emisión del punto de dolor
     e_h = math_node(nodes, links, "MULTIPLY", f_core, heat)
     e_c = math_node(nodes, links, "MULTIPLY", f_core, cool)
     ecol = mix_color(nodes, links, math_node(nodes, links, "DIVIDE", e_c,
@@ -215,7 +232,7 @@ def skin_material(hot):
                      HEAT, COOL)
     links.new(ecol, b.inputs["Emission Color"])
     links.new(math_node(nodes, links, "MULTIPLY",
-                        math_node(nodes, links, "ADD", e_h, e_c), 30.0),
+                        math_node(nodes, links, "ADD", e_h, e_c), emis),
               b.inputs["Emission Strength"])
     # rayos X: transparente con borde azulado (efecto Fresnel)
     lw = nodes.new("ShaderNodeLayerWeight")
@@ -233,6 +250,126 @@ def skin_material(hot):
     links.new(b.outputs[0], mix.inputs[1])
     links.new(add.outputs[0], mix.inputs[2])
     links.new(mix.outputs[0], out.inputs["Surface"])
+    return m
+
+
+TEX = os.path.join(HERE, "modelo", "makehuman", "texturas")
+
+
+def skin_material(hot):
+    """Piel realista: dispersión subsuperficial, poros, labios, barba de dos días y cejas."""
+    m, nodes, links = new_mat("Piel")
+    b = nodes["Principled BSDF"]
+    b.inputs["Roughness"].default_value = 0.5
+    b.inputs["Specular IOR Level"].default_value = 0.45
+    b.inputs["Subsurface Weight"].default_value = 1.0
+    b.inputs["Subsurface Scale"].default_value = 0.0025
+    b.inputs["Subsurface Radius"].default_value = (1.0, 0.4, 0.25)
+    uvn = nodes.new("ShaderNodeUVMap")
+    uvn.uv_map = "UV"
+    uv = uvn.outputs["UV"]
+    tc = nodes.new("ShaderNodeTexCoord")
+    gen = tc.outputs["Generated"]
+    # tono base con variación suave
+    var = _noise(nodes, links, gen, 9.0, 3.0)
+    col = mix_color(nodes, links, var, (0.66, 0.39, 0.27), (0.56, 0.30, 0.21))
+    face = _tex(nodes, links, os.path.join(TEX, "mpfb_face.jpg"), uv)
+    col = mix_color(nodes, links, math_node(nodes, links, "MULTIPLY", face, 0.08), col, (0.62, 0.30, 0.22))
+    lips = _tex(nodes, links, os.path.join(TEX, "mpfb_lips.jpg"), uv)
+    col = mix_color(nodes, links, math_node(nodes, links, "MULTIPLY", lips, 0.75), col, (0.42, 0.15, 0.13))
+    nails = math_node(nodes, links, "MAXIMUM",
+                      _tex(nodes, links, os.path.join(TEX, "mpfb_fingernails.jpg"), uv),
+                      _tex(nodes, links, os.path.join(TEX, "mpfb_toenails.jpg"), uv))
+    col = mix_color(nodes, links, math_node(nodes, links, "MULTIPLY", nails, 0.5), col, (0.75, 0.55, 0.48))
+    # barba de dos días y cejas: puntos finos oscuros
+    fine = _noise(nodes, links, gen, 900.0, 1.0, 0.5)
+    dots = math_node(nodes, links, "GREATER_THAN", fine, 0.52)
+    stub = math_node(nodes, links, "MULTIPLY", _attr(nodes, "barba"),
+                     math_node(nodes, links, "ADD", math_node(nodes, links, "MULTIPLY", dots, 0.35), 0.18))
+    col = mix_color(nodes, links, stub, col, (0.12, 0.08, 0.06))
+    brow_n = _noise(nodes, links, gen, 500.0, 2.0, 0.6)
+    brow = math_node(nodes, links, "MULTIPLY", _attr(nodes, "cejas"),
+                     math_node(nodes, links, "ADD", math_node(nodes, links, "MULTIPLY", brow_n, 0.5), 0.45))
+    col = mix_color(nodes, links, math_node(nodes, links, "MINIMUM", brow, 0.95), col, (0.04, 0.025, 0.018))
+    scalp = math_node(nodes, links, "MULTIPLY", _attr(nodes, "pelo"), 0.8)
+    col = mix_color(nodes, links, scalp, col, (0.07, 0.045, 0.03))
+    # relieve: poros y arrugas suaves
+    pores = _noise(nodes, links, gen, 2600.0, 2.0, 0.7)
+    wr = _noise(nodes, links, gen, 60.0, 6.0, 0.65)
+    h = math_node(nodes, links, "ADD", pores, math_node(nodes, links, "MULTIPLY", wr, 0.6))
+    bp = nodes.new("ShaderNodeBump")
+    bp.inputs["Strength"].default_value = 0.12
+    bp.inputs["Distance"].default_value = 0.0006
+    links.new(h, bp.inputs["Height"])
+    links.new(bp.outputs[0], b.inputs["Normal"])
+    rv = _noise(nodes, links, gen, 25.0, 2.0)
+    links.new(math_node(nodes, links, "ADD", math_node(nodes, links, "MULTIPLY", rv, 0.15), 0.42),
+              b.inputs["Roughness"])
+    return heat_xray(m, nodes, links, b, col, hot)
+
+
+def cloth_material(name, color, hot, knit=1400.0, sheen=0.5):
+    m, nodes, links = new_mat(name)
+    b = nodes["Principled BSDF"]
+    b.inputs["Roughness"].default_value = 0.88
+    b.inputs["Sheen Weight"].default_value = sheen
+    b.inputs["Sheen Tint"].default_value = (1, 1, 1, 1)
+    b.inputs["Specular IOR Level"].default_value = 0.3
+    tc = nodes.new("ShaderNodeTexCoord")
+    gen = tc.outputs["Generated"]
+    mp = nodes.new("ShaderNodeMapping")
+    mp.inputs["Scale"].default_value = (0.6, 0.35, 1.8)    # tamaño aproximado del cuerpo
+    links.new(gen, mp.inputs["Vector"])
+    v = mp.outputs[0]
+    wv = nodes.new("ShaderNodeTexWave")
+    wv.inputs["Scale"].default_value = knit
+    wv.inputs["Distortion"].default_value = 2.0
+    links.new(v, wv.inputs["Vector"])
+    nz = _noise(nodes, links, v, 30.0, 4.0)
+    wr = _noise(nodes, links, v, 8.0, 3.0)
+    h = math_node(nodes, links, "ADD", wv.outputs[1], math_node(nodes, links, "MULTIPLY", nz, 2.0))
+    h = math_node(nodes, links, "ADD", h, math_node(nodes, links, "MULTIPLY", wr, 3.0))
+    bp = nodes.new("ShaderNodeBump")
+    bp.inputs["Strength"].default_value = 0.2
+    bp.inputs["Distance"].default_value = 0.002
+    links.new(h, bp.inputs["Height"])
+    links.new(bp.outputs[0], b.inputs["Normal"])
+    col = mix_color(nodes, links, nz, color, tuple(c * 0.8 for c in color))
+    return heat_xray(m, nodes, links, b, col, hot, emis=12.0)
+
+
+def eye_material(hot):
+    m, nodes, links = new_mat("Ojo")
+    b = nodes["Principled BSDF"]
+    b.inputs["Roughness"].default_value = 0.25
+    b.inputs["Coat Weight"].default_value = 1.0
+    b.inputs["Coat Roughness"].default_value = 0.02
+    b.inputs["Subsurface Weight"].default_value = 0.3
+    b.inputs["Subsurface Scale"].default_value = 0.003
+    ramp = nodes.new("ShaderNodeValToRGB")
+    links.new(_attr(nodes, "iris"), ramp.inputs["Fac"])
+    els = ramp.color_ramp.elements
+    els[0].position, els[0].color = 0.0, (0.55, 0.5, 0.45, 1)
+    els[1].position, els[1].color = 0.80, (0.78, 0.74, 0.70, 1)
+    for pos, c in ((0.905, (0.75, 0.70, 0.66, 1)), (0.915, (0.10, 0.05, 0.025, 1)),
+                   (0.96, (0.16, 0.08, 0.035, 1)), (0.968, (0.005, 0.004, 0.004, 1))):
+        e = els.new(pos)
+        e.color = c
+    return heat_xray(m, nodes, links, b, ramp.outputs["Color"], hot, emis=0.0)
+
+
+def hair_material():
+    m, nodes, links = new_mat("Pelo")
+    out = nodes["Material Output"]
+    nodes.remove(nodes["Principled BSDF"])
+    h = nodes.new("ShaderNodeBsdfHairPrincipled")
+    h.parametrization = "MELANIN"
+    vals = {"Melanin": 0.88, "Melanin Redness": 0.35, "Roughness": 0.35,
+            "Radial Roughness": 0.5, "Random Color": 0.15}
+    for i in h.inputs:
+        if i.name in vals:
+            i.default_value = vals[i.name]
+    links.new(h.outputs[0], out.inputs["Surface"])
     return m
 
 
@@ -484,10 +621,10 @@ POSES = {
     "pieX": pose(hipR=(0, 6, 0), hipL=(0, 6, 0), shR=(4, 14), shL=(4, 14)),
     "tumbadoD": pose(rot=ROT_LIE_R, spine=(12, 0, 0), chest=(8, 0, 0), neck=(10, -8, 0),
                      hipR=(42, 0, 0), kneeR=62, hipL=(48, -10, 0), kneeL=70,
-                     ankleR=-15, ankleL=-15, shR=(80, 0), elbR=95, shL=(55, -15), elbL=60),
+                     ankleR=-15, ankleL=-15, shR=(80, 0), elbR=95, shL=(60, -38), elbL=40),
     "tumbadoI": pose(rot=ROT_LIE_L, spine=(12, 0, 0), chest=(8, 0, 0), neck=(10, 8, 0),
                      hipR=(48, 3, 0), kneeR=72, hipL=(42, 0, 0), kneeL=62,
-                     ankleR=-15, ankleL=-15, shR=(55, -15), elbR=60, shL=(80, 0), elbL=95),
+                     ankleR=-15, ankleL=-15, shR=(60, -38), elbR=40, shL=(80, 0), elbL=95),
     "escalon": pose(root=(0, 0.02, 0.93), spine=(8, 0, 0), hipR=(48, 3, 0), kneeR=64,
                     hipL=(-12, 2, 0), kneeL=8, ankleL=8, shR=(-18, 8), elbR=20, shL=(24, 8), elbL=25),
     "cruzado": pose(spine=(-6, 0, 0), chest=(4, 0, 0), hipR=(114, -22, 0), kneeR=98,
@@ -535,7 +672,7 @@ def leg_ik(fig, p, side, ankle):
     H = fig.frames["hip" + side].translation
     Rp = fig.frames["pelvis"].to_3x3()
     d = Rp.inverted() @ (Vector(ankle) - H)
-    L1, L2 = Figure.THIGH, Figure.SHIN
+    L1, L2 = fig.THIGH, fig.SHIN
     D = min(math.hypot(d.y, d.z), L1 + L2 - 1e-3)
     gamma = math.atan2(-d.y, -d.z)
     a1 = math.acos(clamp((L1 * L1 + D * D - L2 * L2) / (2 * L1 * D), -1, 1))
@@ -917,8 +1054,18 @@ class Director:
         self.lights = Lights()
         self.hot = link(bpy.data.objects.new("PuntoDolor", None))
         self.skin = skin_material(self.hot)
+        self.shorts = cloth_material("Pantalon", (0.018, 0.022, 0.04), self.hot, knit=1100.0, sheen=0.35)
+        self.shirt = cloth_material("Camiseta", (0.16, 0.165, 0.17), self.hot)
+        self.eyes = eye_material(self.hot)
+        self.hair = hair_material()
+        self.mats = [self.skin, self.shorts, self.shirt, self.eyes]
         self.anat = Anatomy()
-        self.fig = Figure(self.skin, hip_half=self.anat.hip_half)
+        self.fig = Humano(self.skin, self.shorts, self.shirt, self.eyes, self.hair)
+        # las posturas de pie se diseñaron con la pelvis a 0.93 m
+        dz = self.fig.pel0.z - 0.93
+        for p in POSES.values():
+            x, y, z = p["root"]
+            p["root"] = (x, y, z + dz)
         self.set = Set()
         cam = bpy.data.cameras.new("Camara")
         cam.sensor_width = 36
@@ -935,6 +1082,14 @@ class Director:
         hipR = F["hipR"]
         gt = hipR @ Vector((-0.055, 0.012, -0.03))
         self.hot.location = gt
+        pil = self.set.bed[2]
+        if not pil.hide_render:
+            # la almohada se coloca bajo la cabeza y rellena el hueco hasta el colchón
+            hc = F["head"] @ Vector((0, -0.01, 0.10))
+            low = hc.z - 0.07
+            h = max(0.04, low - self.set.bed_top + 0.012)
+            pil.location = (hc.x, hc.y, self.set.bed_top + h / 2 - 0.01)
+            pil.scale = (1.0, 1.0, h / 0.12)
         if anatomy_xray:
             rp = P.to_3x3().inverted() @ hipR.to_3x3()
             rl = P.to_3x3().inverted() @ F["hipL"].to_3x3()
@@ -952,8 +1107,14 @@ class Director:
         self.cam.data.dof.aperture_fstop = fstop
 
     def heat(self, h, c=0.0):
-        set_val(self.skin, "HEAT", h)
-        set_val(self.skin, "COOL", c)
+        for m in self.mats:
+            set_val(m, "HEAT", h)
+            set_val(m, "COOL", c)
+
+    def xray(self, x):
+        for m in self.mats:
+            set_val(m, "XRAY", x)
+        self.fig.body.modifiers["Pelo"].show_render = x < 0.3
 
     def anchor(self, name, world):
         co = world_to_camera_view(self.sc, self.cam, world)
@@ -968,7 +1129,7 @@ class Director:
         fig, anat, st, L = self.fig, self.anat, self.set, self.lights
         fig.set_visible(True)
         anat.set_visible(False)
-        set_val(self.skin, "XRAY", 0.0)
+        self.xray(0.0)
         anat.set("GLOW", 0.0)
         anat.set("HEAT", 0.0)
         anat.set("COOL", 0.0)
@@ -1040,7 +1201,7 @@ class Director:
         F, gt = self.frame_figure(p, anatomy_xray=True)
         self.fig.merge = False
         x = ease(t, a + 0.3, a + 1.3)
-        set_val(self.skin, "XRAY", x)
+        self.xray(x)
         self.anat.set_visible(x > 0.01, left=True)
         self.anat.set("ALPHA", x)
         self.anat.set("ALPHA", 0.0 if x < 0.01 else 0.25 * x, ["gluteus_maximus_right", "gluteus_maximus_left"])
